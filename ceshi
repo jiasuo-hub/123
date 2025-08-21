@@ -1,0 +1,103 @@
+#include <iostream>
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <cstring>
+#include <atomic>
+
+class NetworkScanner {
+public:
+    NetworkScanner(const std::string& target, int start, int end, int threads = 10)
+        : target_ip(target), start_port(start), end_port(end), max_threads(threads) {}
+
+    void start_scan() {
+        std::vector<std::thread> threads;
+        current_port.store(start_port);
+        
+        for (int i = 0; i < max_threads; ++i) {
+            threads.emplace_back(&NetworkScanner::scan_worker, this);
+        }
+
+        for (auto& t : threads) {
+            t.join();
+        }
+    }
+
+    void print_results() {
+        std::cout << "\nScan results for " << target_ip << ":\n";
+        std::lock_guard<std::mutex> lock(results_mutex);
+        for (int port : open_ports) {
+            std::cout << "[+] Port " << port << " is OPEN\n";
+        }
+        std::cout << "Total open ports: " << open_ports.size() << std::endl;
+    }
+
+private:
+    void scan_worker() {
+        while (true) {
+            int port = current_port.fetch_add(1);
+            if (port > end_port) break;
+
+            if (check_port(port)) {
+                std::lock_guard<std::mutex> lock(results_mutex);
+                open_ports.push_back(port);
+            }
+        }
+    }
+
+    bool check_port(int port) {
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) return false;
+
+        // 设置超时
+        struct timeval tv;
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        sockaddr_in server{};
+        server.sin_family = AF_INET;
+        server.sin_port = htons(port);
+        inet_pton(AF_INET, target_ip.c_str(), &server.sin_addr);
+
+        bool is_open = (connect(sock, (struct sockaddr*)&server, sizeof(server)) == 0);
+        close(sock);
+        return is_open;
+    }
+
+    std::string target_ip;
+    int start_port;
+    int end_port;
+    int max_threads;
+    std::atomic<int> current_port;
+    std::vector<int> open_ports;
+    std::mutex results_mutex;
+};
+
+int main() {
+    std::string ip;
+    int start, end, threads;
+
+    std::cout << "Enter target IP: ";
+    std::cin >> ip;
+    
+    std::cout << "Start port: ";
+    std::cin >> start;
+    
+    std::cout << "End port: ";
+    std::cin >> end;
+    
+    std::cout << "Threads (default 10): ";
+    std::cin >> threads;
+
+    NetworkScanner scanner(ip, start, end, threads);
+    std::cout << "\nStarting scan..." << std::endl;
+    
+    scanner.start_scan();
+    scanner.print_results();
+
+    return 0;
+}
